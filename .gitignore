@@ -1,0 +1,30 @@
+# --- Terraform (infra/terraform/) ---
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# --- Secrets / env ---
+.env
+.env.*
+*.pem
+*.key
+
+# --- Python (triage agent, eval harness) ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
