@@ -1,0 +1,63 @@
+---
+- name: Install k3s and fetch kubeconfig
+  hosts: k3s_servers
+  become: true
+  vars:
+    # Rewritten to 127.0.0.1 rather than the node's real IP — symphony has no
+    # route to the private vmbr1 subnet, so kubectl reaches the node through
+    # a local SSH tunnel via pve1 (see infra/ansible/README.md).
+    kubeconfig_local_path: "{{ playbook_dir }}/fetched/sre-copilot-kubeconfig.yaml"
+
+  tasks:
+    - name: Check whether k3s is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Download and run the k3s install script
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | sh -s - server \
+          --disable traefik \
+          --disable servicelb \
+          --write-kubeconfig-mode 644
+      when: not k3s_binary.stat.exists
+      args:
+        creates: /usr/local/bin/k3s
+
+    - name: Wait for the k3s API to be responsive
+      ansible.builtin.wait_for:
+        port: 6443
+        host: 127.0.0.1
+        timeout: 120
+
+    - name: Wait for the node to report Ready
+      ansible.builtin.shell: >
+        /usr/local/bin/k3s kubectl get node {{ inventory_hostname }}
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: node_ready
+      until: node_ready.stdout == "True"
+      retries: 15
+      delay: 5
+      changed_when: false
+
+    - name: Fetch kubeconfig from the node
+      ansible.builtin.fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ kubeconfig_local_path }}"
+        flat: true
+
+    - name: Restrict local kubeconfig permissions
+      ansible.builtin.file:
+        path: "{{ kubeconfig_local_path }}"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+    - name: Show how to use it
+      ansible.builtin.debug:
+        msg: >-
+          kubeconfig saved to {{ kubeconfig_local_path }}.
+          Open a tunnel first: ssh -L 6443:{{ ansible_host }}:6443 root@65.108.102.155 -N
+          then: KUBECONFIG={{ kubeconfig_local_path }} kubectl get nodes
+      delegate_to: localhost
+      become: false
