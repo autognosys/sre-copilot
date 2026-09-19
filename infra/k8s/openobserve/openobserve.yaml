@@ -1,0 +1,116 @@
+# OpenObserve, single-node "all-in-one" mode — NOT the openobserve/openobserve
+# Helm chart, which defaults to a distributed HA topology (separate ingester/
+# querier/router/scheduler/compactor pods, plus a 3-node NATS cluster and a
+# 2-instance Postgres requiring the cloudnative-pg operator). That's ~12 pods
+# and an extra operator dependency — wrong fit for a single 16GB lab node.
+#
+# ZO_NODE_ROLE=all is OpenObserve's own documented single-binary deployment
+# path (same shape as their quickstart docker run) — one process does
+# ingestion, querying, and routing. This is the right way to learn the
+# product at this scale, not a stripped-down toy mode.
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openobserve-data
+  namespace: observability
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openobserve-auth
+  namespace: observability
+type: Opaque
+stringData:
+  # Real password set at apply time — see infra/helm/README.md — not
+  # committed here. This placeholder only exists so `kubectl apply -f`
+  # doesn't fail if applied before the real secret is created; the real
+  # secret creation step (kubectl create secret) takes precedence if run
+  # after this file, so keep this a throwaway value, not one you'd ever use.
+  ZO_ROOT_USER_EMAIL: "admin@sre-copilot.local"
+  ZO_ROOT_USER_PASSWORD: "CHANGE_ME_SEE_README"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openobserve
+  namespace: observability
+  labels:
+    app: openobserve
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openobserve
+  template:
+    metadata:
+      labels:
+        app: openobserve
+    spec:
+      containers:
+        - name: openobserve
+          image: public.ecr.aws/zinclabs/openobserve:latest
+          ports:
+            - containerPort: 5080
+              name: http
+            - containerPort: 5081
+              name: grpc
+          envFrom:
+            - secretRef:
+                name: openobserve-auth
+          env:
+            - name: ZO_NODE_ROLE
+              value: "all"
+            - name: ZO_LOCAL_MODE
+              value: "true"
+            - name: ZO_DATA_DIR
+              value: "/data"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: openobserve-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openobserve
+  namespace: observability
+spec:
+  selector:
+    app: openobserve
+  ports:
+    - name: http
+      port: 5080
+      targetPort: 5080
+    - name: grpc
+      port: 5081
+      targetPort: 5081

@@ -1,0 +1,70 @@
+# Helm values for the OpenTelemetry Collector (single-node k3s lab).
+#
+# Chart: open-telemetry/opentelemetry-collector
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update
+#
+# IMPORTANT: run `helm show values open-telemetry/opentelemetry-collector`
+# and diff against this before installing — chart schema drifts across
+# versions. The `config:` block below (the actual OTel Collector config,
+# nested inside the Helm values) is the part least likely to need changes;
+# the surrounding Helm-specific keys (mode, resources, etc.) are more
+# likely to have shifted.
+
+mode: deployment   # single node today; switch to daemonset only if/when
+
+image:
+  repository: otel/opentelemetry-collector
+                   # per-node host log/metric collection is actually needed
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  processors:
+    batch: {}
+
+  exporters:
+    # OpenObserve ingests OTLP directly. Confirm the exact path/auth header
+    # format against OpenObserve's current OTLP ingestion docs for the
+    # version installed — this is the piece most likely to need a tweak.
+    otlp_http/openobserve:
+      endpoint: "http://openobserve.observability.svc.cluster.local:5080/api/default"
+      headers:
+        Authorization: "Basic REPLACE_WITH_BASE64_USER_PASS"
+      tls:
+        insecure: true
+
+    debug:
+      verbosity: normal
+
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [otlp_http/openobserve, debug]
+      metrics:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [otlp_http/openobserve, debug]
+      logs:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [otlp_http/openobserve, debug]
+
