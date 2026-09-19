@@ -17,6 +17,10 @@ override.tf.json
 *.pem
 *.key
 
+# --- Ansible (infra/ansible/) ---
+**/fetched/
+*.retry
+
 # --- Python (triage agent, eval harness) ---
 __pycache__/
 *.pyc
@@ -28,3 +32,5 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+*.tfplan
+tfplan.out

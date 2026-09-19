@@ -48,7 +48,7 @@ resource "proxmox_virtual_environment_vm" "k3s_node" {
 
     user_account {
       username = var.vm_username
-      keys     = [trimspace(file(var.ssh_public_key_path))]
+      keys     = [trimspace(file(pathexpand(var.ssh_public_key_path)))]
     }
   }
 
