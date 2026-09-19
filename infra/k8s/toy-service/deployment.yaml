@@ -1,0 +1,55 @@
+# The memory limit here is deliberately low (256Mi) so that setting
+# LEAK_RATE_MB_PER_SEC to any meaningful value (see the "bad deploy"
+# ConfigMap/patch below) reliably OOMKills within a minute or two — fast
+# enough to iterate on during triage-agent development.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: default
+  labels:
+    app: order-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      containers:
+        - name: order-service
+          # Build and push this from app/toy-service/Dockerfile to wherever
+          # this cluster can pull from (a registry, or `k3s ctr images
+          # import` for a fully local loop). Placeholder tag below.
+          image: autognosys/order-service:v1
+          ports:
+            - containerPort: 8000
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4317"
+            - name: LEAK_RATE_MB_PER_SEC
+              value: "0"     # normal mode — bump this via a "bad deploy" to trigger the incident
+            - name: CRASH_ON_STARTUP
+              value: "false"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10

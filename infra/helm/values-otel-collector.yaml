@@ -45,6 +45,7 @@ config:
     # version installed — this is the piece most likely to need a tweak.
     otlp_http/openobserve:
       endpoint: "http://openobserve.observability.svc.cluster.local:5080/api/default"
+      encoding: json
       headers:
         Authorization: "Basic REPLACE_WITH_BASE64_USER_PASS"
       tls:

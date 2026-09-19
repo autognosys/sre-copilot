@@ -1,0 +1,22 @@
+# The "bad deploy" for step 4/5 of the build: apply this to trigger a
+# deterministic OOMKill incident on order-service, matched against the
+# 256Mi limit in deployment.yaml.
+#
+# Usage:
+#   kubectl patch deployment order-service --patch-file bad-deploy-memory-leak.yaml
+#
+# To simulate the other root-cause category (CrashLoopBackOff instead of
+# OOMKill), patch CRASH_ON_STARTUP to "true" instead — same mechanism,
+# different failure signature, useful for testing that the triage agent
+# tells the two apart rather than pattern-matching "pod unhealthy".
+#
+# To roll back to the last-known-good state:
+#   kubectl rollout undo deployment/order-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: order-service
+          env:
+            - name: LEAK_RATE_MB_PER_SEC
+              value: "40"
