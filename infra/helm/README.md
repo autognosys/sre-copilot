@@ -68,15 +68,30 @@ echo -n "admin@sre-copilot.local:$OO_ROOT_PASSWORD" | base64
 ```
 
 Paste that into `values-otel-collector.yaml`'s
-`exporters.otlphttp/openobserve.headers.Authorization` in place of
+`exporters.otlp_http/openobserve.headers.Authorization` in place of
 `REPLACE_WITH_BASE64_USER_PASS` — or override at install time:
 
 ```bash
 helm install otel-collector open-telemetry/opentelemetry-collector \
   -n observability \
   -f values-otel-collector.yaml \
-  --set-string 'config.exporters.otlphttp/openobserve.headers.Authorization'="Basic $(echo -n "admin@sre-copilot.local:$OO_ROOT_PASSWORD" | base64)"
+  --set-string 'config.exporters.otlp_http/openobserve.headers.Authorization'="Basic $(echo -n "admin@sre-copilot.local:$OO_ROOT_PASSWORD" | base64)"
 ```
+
+### Known gotcha: protobuf traces get silently dropped
+
+`otlp_http`'s default encoding is protobuf. With this OpenObserve build,
+protobuf-encoded traces return `HTTP 200`/`206` from OpenObserve (so the
+collector logs zero errors — the debug exporter and collector logs looked
+completely healthy) while the spans are silently never persisted
+(`doc_num` stays `0` in `GET /api/default/streams?type=traces` forever).
+Metrics worked fine over protobuf; only traces exhibited this. Root-caused
+by testing OpenObserve's `/v1/traces` endpoint directly with curl: a JSON
+payload returned a clean `200`, the same payload's protobuf-equivalent
+export path (via the collector) did not persist. Fix is `encoding: json`
+on the exporter — already set in `values-otel-collector.yaml`. If a future
+chart/OpenObserve upgrade makes this file's protobuf default start working,
+this is safe to remove, but there's no urgency to.
 
 ## 6. Verify
 
