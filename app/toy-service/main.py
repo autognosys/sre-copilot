@@ -19,6 +19,7 @@ categories rather than just pattern-matching "pod is unhealthy".
 
 import logging
 import os
+import random
 import sys
 import threading
 import time
@@ -74,10 +75,16 @@ _leak_buffer: list[bytes] = []
 
 def _leak_memory():
     """Background thread: allocates LEAK_RATE_MB_PER_SEC of memory every
-    second and never frees it. Only runs if LEAK_RATE_MB_PER_SEC > 0."""
+    second and never frees it. Only runs if LEAK_RATE_MB_PER_SEC > 0.
+
+    Uses os.urandom rather than bytes(n) (zero-fill) — zero-filled buffers
+    can be satisfied by the OS via copy-on-write mappings to a shared zero
+    page and never actually become resident (RSS), so cgroups memory
+    accounting never sees them and no OOMKill happens no matter how much
+    "leaks". Random bytes force real physical page commitment."""
     chunk_bytes = int(LEAK_RATE_MB_PER_SEC * 1024 * 1024)
     while True:
-        _leak_buffer.append(bytes(chunk_bytes))
+        _leak_buffer.append(os.urandom(chunk_bytes))
         log.info(
             "leaked another %.1fMB (approx total held: %.1fMB)",
             LEAK_RATE_MB_PER_SEC,
