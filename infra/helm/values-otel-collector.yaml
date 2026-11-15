@@ -47,7 +47,7 @@ config:
       endpoint: "http://openobserve.observability.svc.cluster.local:5080/api/default"
       encoding: json
       headers:
-        Authorization: "Basic REPLACE_WITH_BASE64_USER_PASS"
+        Authorization: "Basic ${env:OO_BASIC_AUTH}"
       tls:
         insecure: true
 
@@ -69,3 +69,17 @@ config:
         processors: [batch]
         exporters: [otlp_http/openobserve, debug]
 
+
+extraEnvs:
+  - name: OO_BASIC_AUTH
+    valueFrom:
+      secretKeyRef:
+        name: otel-openobserve-auth
+        key: OO_BASIC_AUTH
+
+extraEnvs:
+  - name: OO_BASIC_AUTH
+    valueFrom:
+      secretKeyRef:
+        name: otel-openobserve-auth
+        key: OO_BASIC_AUTH
