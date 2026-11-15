@@ -108,3 +108,9 @@ kubectl port-forward -n observability svc/openobserve 5080:5080
 # then browse http://localhost:5080 (through the existing SSH tunnel setup
 # if browsing from a machine other than the one running kubectl)
 ```
+
+## Holmes API clients (chart 0.46.0)
+Always send `-H 'Accept: application/json'`. Holmes 0.46.0 runs every propagated
+request header through a shell-metacharacter guard (ROB-1104), so curl's default
+`Accept: */*` makes all kubernetes tools fail with
+"request header 'accept' contains disallowed shell metacharacter(s) '*'".

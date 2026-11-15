@@ -1,0 +1,59 @@
+additionalEnvVars:
+  - name: ANTHROPIC_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: holmes-secrets
+        key: anthropic-api-key
+  - name: MODEL
+    value: haiku
+
+modelList:
+  haiku:
+    model: anthropic/claude-haiku-5-5
+    api_key: envRef:ANTHROPIC_API_KEY
+    temperature: 0
+  sonnet:
+    model: anthropic/claude-sonnet-5-5
+    api_key: envRef:ANTHROPIC_API_KEY
+    temperature: 0
+
+toolsets:
+  kubernetes/core:
+    enabled: true
+  kubernetes/logs:
+    enabled: true
+  bash:
+    enabled: false
+  internet:
+    enabled: false
+  robusta:
+    enabled: false
+  prometheus/metrics:
+    enabled: false
+  connectivity_check:
+    enabled: false
+
+crdPermissions:
+  argo: false
+  flux: false
+  kafka: false
+  keda: false
+  crossplane: false
+  istio: false
+  gatewayApi: false
+  velero: false
+  externalSecrets: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
