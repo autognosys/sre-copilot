@@ -1,0 +1,9 @@
+spec:
+  template:
+    spec:
+      containers:
+        - name: order-service
+          env:
+            - name: ORDER_MODE
+              valueFrom:
+                configMapKeyRef: {name: order-config, key: mode}
