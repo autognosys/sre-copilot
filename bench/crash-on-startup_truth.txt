@@ -1,0 +1,11 @@
+NAME                                 READY   STATUS             RESTARTS      AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-554d7ff94d-jmdjk   0/1     CrashLoopBackOff   3 (20s ago)   62s   10.42.0.53   sre-copilot-k3s-1   <none>           <none>
+pod/order-service-749677bb7f-xf2cs   1/1     Running            0             70s   10.42.0.52   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    58d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   10.42.0.52:8000       58d

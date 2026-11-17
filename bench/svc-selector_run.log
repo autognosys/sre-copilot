@@ -1,0 +1,68 @@
+service/order-service patched
+=== ground truth: svc-selector ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS    RESTARTS   AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-749677bb7f-9f288   1/1     Running   0          29s   10.42.0.43   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    57d   app=order-svc
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   <none>                57d
+**Root cause: the `order-service` Service selector doesn't match any pod, so it has no endpoints and all traffic to it fails.**
+
+Evidence:
+- Service `default/order-service` (ClusterIP 10.43.62.168, port 80 → targetPort 8000) has selector `app: order-svc`.
+- Deployment `default/order-service` and its pod `order-service-749677bb7f-9f288` are labeled `app: order-service`. The pod is Running, Ready, 0 restarts, IP 10.42.0.43.
+- Endpoints `default/order-service` has no subsets.
+- No pods carry `app=order-svc` in any namespace.
+- Pod logs show only uvicorn startup and `GET /healthz 200 OK`. No application errors, and no client requests reach the pod, which is consistent with the Service having no backends.
+
+The Deployment itself is healthy (1/1 available). The fault is only in the Service selector.
+
+**Fix:** change the Service selector to match the pods:
+```
+kubectl -n default patch svc order-service -p '{"spec":{"selector":{"app":"order-service"}}}'
+```
+Then confirm with `kubectl -n default get endpoints order-service`, which should list 10.42.0.43:8000.
+
+**Impact status:**
+- **Affected:** Service `order-service` (no endpoints; any client calling it gets no backend).
+- **Checked, healthy:** Deployment `order-service` and pod `order-service-749677bb7f-9f288`.
+- **Changed during the window for another reason:** pod `order-service-749677bb7f-rh7mp` was stopped at 06:43:02 by a ScalingReplicaSet rollout (replicaset scaled 0→1 at 06:43:04). This is a rollout, not a failure.
+- **Not checked:** the callers of `order-service` and their error logs. I could not confirm what they report.
+- **Unknown:** when the selector changed. The Service's history isn't visible in the data I pulled, so I can't say whether it was a recent change or a long-standing mismatch.
+---
+seconds: 17
+cost: 0.00443638
+tool_calls: 9
+prompt_tokens: 71613
+completion_tokens: 3308
+**Root cause:** the `order-service` Service selector doesn't match the pod's labels, so the Service has no endpoints.
+
+- The Service `default/order-service` selects `app: order-svc`. It maps port 80 to targetPort 8000.
+- The pod `order-service-749677bb7f-9f288` is labeled `app: order-service`.
+- The Endpoints object for `order-service` has no ready or not-ready addresses. Requests through the Service therefore have no backend, and connections fail or are refused.
+
+**Checked, healthy:**
+- The pod is Running and Ready, with 0 restarts.
+- It listens on containerPort 8000, which matches the Service targetPort.
+- I read the last hour of pod logs (21 lines, no filter). Uvicorn started cleanly and every `/healthz` probe returned 200. There were no errors.
+
+I didn't check the Deployment spec or the change history. So I can't say whether the Service selector or the pod label was changed. I also didn't test a request through the Service.
+
+**Fix:** make the selector and the labels agree. The simplest option is to patch the Service selector:
+```
+kubectl -n default patch svc order-service -p '{"spec":{"selector":{"app":"order-service"}}}'
+```
+Alternatively, change the Deployment's pod template label to `app: order-svc`. That triggers a rollout, and the Deployment's own selector would also need to match.
+
+Then run `kubectl -n default get endpoints order-service`. It should list the pod IP on port 8000.
+---
+seconds: 12
+cost: 0.0528035
+tool_calls: 5
+prompt_tokens: 34423
+completion_tokens: 1673

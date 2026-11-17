@@ -1,0 +1,67 @@
+deployment.apps/order-service patched
+=== ground truth: crash-on-startup ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS             RESTARTS      AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-554d7ff94d-fpqxg   0/1     CrashLoopBackOff   3 (17s ago)   61s   10.42.0.33   sre-copilot-k3s-1   <none>           <none>
+pod/order-service-749677bb7f-xg6vp   1/1     Running            0             69s   10.42.0.32   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    57d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   10.42.0.32:8000       57d
+**Root cause:** the current `order-service` Deployment template (revision 2, ReplicaSet `order-service-554d7ff94d`) sets `CRASH_ON_STARTUP=true`. The app exits on startup when this is set.
+
+**Evidence**
+- Pod `order-service-554d7ff94d-fpqxg`: `CrashLoopBackOff`, 3 restarts, last exit code 1 (`Error`), with `BackOff` warning events.
+- Logs (last 1h, all 6 lines shown): `CRASH_ON_STARTUP is set — exiting immediately to simulate a bad deploy`.
+- Env on the crashing pod and the Deployment template: `CRASH_ON_STARTUP=true`.
+- The Deployment's `last-applied-configuration` annotation still says `CRASH_ON_STARTUP=false`. The live spec was changed outside of `kubectl apply`, probably with a `kubectl set env` or patch. Treat this as likely, not confirmed.
+- Events: `ScalingReplicaSet` created `order-service-554d7ff94d` at 06:34:18, and the Deployment is stuck in `Progressing` (`ReplicaSet "order-service-554d7ff94d" is progressing`).
+
+**Current state**
+- **Affected:** `order-service-554d7ff94d-fpqxg` (`BackOff`, `CrashLoopBackOff`, exit code 1).
+- **Healthy:** `order-service-749677bb7f-xg6vp`, Running, 0 restarts, `CRASH_ON_STARTUP=false`. This is the only ready replica (Deployment shows 1/1 ready, 1 unavailable).
+- **Not checked:** Service endpoints, ingress, and downstream callers. Customer impact is unverified.
+
+**Fix (pick one)**
+1. Turn off the flag on the live Deployment:
+   `kubectl -n default set env deployment/order-service CRASH_ON_STARTUP=false`
+2. Or roll back to the previous revision:
+   `kubectl -n default rollout undo deployment/order-service`
+
+Then confirm with `kubectl -n default rollout status deployment/order-service`. Also update the manifest in source control so the next `kubectl apply` doesn't reintroduce `CRASH_ON_STARTUP=true`.
+---
+seconds: 19
+cost: 0.0041768
+tool_calls: 6
+prompt_tokens: 40931
+completion_tokens: 3256
+**Root cause:** The newest rollout of `order-service` set `CRASH_ON_STARTUP=true`. The new pod exits on startup and crash-loops.
+
+**Evidence**
+- Pod `order-service-554d7ff94d-fpqxg` (ReplicaSet `order-service-554d7ff94d`, created 06:34:18Z) is in `CrashLoopBackOff`. It has 3 restarts, and its last state is exit code 1, reason `Error`.
+- Its container env has `CRASH_ON_STARTUP=true`.
+- Logs from that pod (last 24h, 6 lines total, no filter) show: `ERROR order-service CRASH_ON_STARTUP is set — exiting immediately to simulate a bad deploy`.
+- Events show `BackOff` ("Back-off restarting failed container") on that pod at 06:35:08Z.
+- The image is the same in both revisions (`autognosys/order-service:v1`). The only difference I found is the env var: the older ReplicaSet `order-service-749677bb7f` has `CRASH_ON_STARTUP=false`.
+
+**Impact**
+- **Affected:** `order-service-554d7ff94d-fpqxg` (`CrashLoopBackOff`, `BackOff`, exit code 1).
+- **Checked, healthy:** `order-service-749677bb7f-xg6vp` is Running and ready with 0 restarts. It is the only ready pod, so the deployment shows 1/1 ready. Whether the bad pod receives traffic depends on its readiness, which is false.
+- **Not checked:** I did not check downstream consumers or service endpoints.
+
+**Why traffic may still work:** The deployment had two ReplicaSets in the events: `order-service-749677bb7f` scaled up at 06:34:10Z and `order-service-554d7ff94d` at 06:34:18Z. The old pod `order-service-749677bb7f-7m7kv` was stopped (`Killing` at 06:34:07Z). I did not confirm whether the rollout is stalled, but the old healthy pod is still serving.
+
+**Fix**
+- Roll back to the previous revision: `kubectl rollout undo deployment/order-service -n default`.
+- Alternatively, remove `CRASH_ON_STARTUP` from the deployment spec, or set it to `false`: `kubectl set env deployment/order-service CRASH_ON_STARTUP=false`.
+- Find where `CRASH_ON_STARTUP=true` came from (a manifest, Helm values or a GitOps repo) and correct it there, so it isn't reapplied.
+---
+seconds: 15
+cost: 0.0602528
+tool_calls: 5
+prompt_tokens: 35228
+completion_tokens: 2089

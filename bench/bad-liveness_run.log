@@ -1,0 +1,64 @@
+deployment.apps/order-service patched
+=== ground truth: bad-liveness ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS    RESTARTS     AGE    IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-7c885bbf75-pgzkh   0/1     Running   4 (1s ago)   2m2s   10.42.0.39   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    57d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service                         57d
+**Root cause: the liveness probe on `order-service` points at port 9999, but the app listens on 8000.** The kubelet kills the healthy container every few minutes.
+
+**Evidence**
+- Deployment `order-service` (default), revision 2, live liveness probe: `httpGet /healthz port 9999`. Readiness probe: port 8000. Container port: 8000.
+- Last-applied config (`kubectl.kubernetes.io/last-applied-configuration`) says liveness port **8000**. The live spec says **9999**, so the change was made outside `kubectl apply` (edit or patch).
+- Revision 2 (`order-service-7c885bbf75`) was created at 06:38:19Z, replacing revision 1 (`order-service-749677bb7f`, liveness on 8000). Rollout completed at 06:38:25Z.
+- Pod `order-service-7c885bbf75-pgzkh` events:
+  - `Unhealthy` (Warning, count 12): `Liveness probe failed: Get "http://10.42.0.39:9999/healthz": dial tcp 10.42.0.39:9999: connect: connection refused`
+  - `Killing` (count 4): `Container order-service failed liveness probe, will be restarted`
+- Pod restart count is 4. Last termination reason is `Completed`, exit code 0, which is a graceful shutdown from the kubelet kill, not a crash.
+- Pod logs (last 1h, 22 lines, all shown, no filter): the app starts, serves `GET /healthz` on 8000 with `200 OK` every time it is probed, then shuts down when the kubelet stops it. The application itself is healthy.
+- Current state: pod is Running and Ready, but it will keep failing the liveness check on 9999 and restarting. Only one replica exists, so every restart takes `order-service` down.
+
+**Impact**
+- Affected: `order-service-7c885bbf75-pgzkh` (`Unhealthy` and `Killing` events, restart count 4).
+- Affected workload: `order-service` deployment, which has one replica and is repeatedly restarted.
+- Not checked: other workloads that call `order-service` (I did not query their logs or metrics).
+
+**Fix**
+Point the liveness probe back at port 8000, either with `kubectl edit deployment order-service -n default` or with:
+```
+kubectl patch deployment order-service -n default --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/httpGet/port","value":8000}]'
+```
+Then update the source manifest so the next `kubectl apply` does not revert it or reintroduce 9999.
+---
+seconds: 20
+cost: 0.004861394999999999
+tool_calls: 9
+prompt_tokens: 56660
+completion_tokens: 3994
+**Root cause:** The liveness probe in the `order-service` Deployment points at the wrong port. The container is being killed and restarted by the kubelet even though the app is healthy.
+
+**Evidence**
+- The liveness probe is `httpGet /healthz` on port **9999**. The container only listens on **8000**, which is the only `containerPort`. The readiness probe correctly uses 8000.
+- Events on pod `order-service-7c885bbf75-pgzkh`:
+  - `Unhealthy`: `Liveness probe failed: Get "http://10.42.0.39:9999/healthz": connect: connection refused` (count 15).
+  - `Killing`: `Container order-service failed liveness probe, will be restarted` (count 5).
+  - `BackOff`: `Back-off restarting failed container`.
+- The pod has 4 restarts. The last termination was `Completed` with exit code 0, after about 30s of runtime. That matches 3 failed probes at a 10s period after a 5s initial delay.
+- Pod logs (last 1h, current and previous containers, 26 lines, no filter) show a clean startup. Uvicorn answers `GET /healthz 200 OK` on 8000. Then it shuts down gracefully ("Shutting down"), which is a SIGTERM from the kubelet and not an app crash.
+- The app config looks fine: `CRASH_ON_STARTUP=false` and `LEAK_RATE_MB_PER_SEC=0`. There was no `OOMKilled`.
+
+**Context:** A rollout at 06:38 replaced ReplicaSet `order-service-749677bb7f` with `order-service-7c885bbf75`. The old pod showed no liveness failures in its events. The bad probe port most likely came in with the new revision. I did not diff the two ReplicaSets' specs, so that part is unconfirmed.
+
+**Fix:** Change `livenessProbe.httpGet.port` from 9999 to 8000. Either edit the Deployment or run `kubectl rollout undo deployment/order-service`. Adding a `startupProbe` is optional hardening.
+---
+seconds: 17
+cost: 0.06688630000000001
+tool_calls: 6
+prompt_tokens: 50865
+completion_tokens: 2112

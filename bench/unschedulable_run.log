@@ -1,0 +1,62 @@
+deployment.apps/order-service patched
+=== ground truth: unschedulable ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS    RESTARTS   AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-6cd6687bf6-4cm9b   0/1     Pending   0          31s   <none>       <none>              <none>           <none>
+pod/order-service-749677bb7f-rpkn4   1/1     Running   0          39s   10.42.0.41   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    57d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   10.42.0.41:8000       57d
+**Root cause:** a bad memory value in the latest `order-service` rollout (revision 2) makes its new pod unschedulable.
+
+- **Bad spec:** ReplicaSet `order-service-6cd6687bf6` (revision 2, created 06:41:32Z) sets memory request and limit to `100Gi`. Revision 1 (`order-service-749677bb7f`) had `64Mi` request and `256Mi` limit. The `kubectl last-applied` annotation confirms the intended values were `64Mi`/`256Mi`, so the `100Gi` value is an unintended change, probably a typo for `100Mi` or a similar value.
+- **Scheduling failure:** pod `order-service-6cd6687bf6-4cm9b` is `Pending`. Its PodScheduled condition says `Unschedulable`, with `1 Insufficient memory`. The only node, `sre-copilot-k3s-1`, has 16377016Ki (~16 GiB) allocatable memory, which can't fit a 100Gi request.
+- **Stuck rollout:** the Deployment reports `Progressing=True` (ReplicaSetUpdated) but the rollout can't complete. The old revision-1 pod is still running and keeps the Deployment `Available`.
+
+**Current state**
+- **Affected:** `order-service-6cd6687bf6-4cm9b` (`FailedScheduling`, `Unschedulable`). The new revision never starts.
+- **Checked, healthy:** `order-service-749677bb7f-rpkn4` is Running and Ready, 0 restarts. Its logs for the last hour (19 lines, all shown, no filter) show normal startup and `/healthz` 200s only. Its env has `LEAK_RATE_MB_PER_SEC=0` and `CRASH_ON_STARTUP=false`.
+- **Not checked:** other namespaces, and any client-facing errors or latency. I didn't have access to those signals.
+
+**Fix (pick one)**
+1. Roll back to the working revision: `kubectl rollout undo deployment/order-service -n default`
+2. Or correct the memory values to a sane number, e.g. `kubectl set resources deployment/order-service -n default --requests=memory=64Mi --limits=memory=256Mi` (or `100Mi` if that was the intent), then confirm with `kubectl rollout status deployment/order-service -n default`.
+
+Option 1 is the quickest way back to a fully scheduled deployment. Either way, check the revision-2 image and env changes too, since only the memory values were confirmed here.
+---
+seconds: 18
+cost: 0.00484362
+tool_calls: 8
+prompt_tokens: 60471
+completion_tokens: 3721
+**Root cause:** the latest `order-service` rollout (revision 2) asks for 100Gi of memory per pod, and the node only has about 15.6Gi. The new pod can't be scheduled, so the rollout is stuck.
+
+**Evidence**
+- The new pod `order-service-6cd6687bf6-4cm9b` is `Pending`, created 06:41:32. Its `FailedScheduling` event says: `0/1 nodes are available: 1 Insufficient memory… Preemption is not helpful`.
+- That pod's spec has `requests.memory` and `limits.memory` both set to `100Gi`, with CPU at 50m/250m.
+- The only node, `sre-copilot-k3s-1`, has allocatable memory of 16377016Ki (about 15.6Gi). No pod with a 100Gi request can fit there.
+- The old pod `order-service-749677bb7f-rpkn4` is still `Running` and ready, with 0 restarts. Its memory request is 64Mi and its limit is 256Mi. Its logs show a normal startup and `/healthz` returning 200.
+- The deployment is at generation 2, revision 2. Its `Progressing` condition says `ReplicaSet "order-service-6cd6687bf6" is progressing`, and `Available` is True.
+
+**Impact**
+- **Affected:** the rollout to `order-service-6cd6687bf6`. It is stuck with a `Pending` pod (`FailedScheduling`).
+- **Checked, healthy:** the old pod `order-service-749677bb7f-rpkn4` is running and serving health checks. Because the rolling update can't proceed, it is still the pod serving traffic.
+- **Not checked:** the `order-service` application's behaviour beyond `/healthz`, and any callers of the service.
+
+**Unconfirmed:** the live deployment spec contains 100Gi, but the `last-applied-configuration` annotation still shows 256Mi/64Mi. The 100Gi value therefore appears to have come from a direct edit (for example `kubectl edit`, `kubectl set resources` or a patch) rather than `kubectl apply`. I didn't find who made the change.
+
+**Fix**
+- Restore sensible resources, for example `kubectl set resources deploy/order-service --requests=memory=64Mi --limits=memory=256Mi`.
+- Or run `kubectl rollout undo deploy/order-service`.
+- If the 100Gi was a typo, check where the manifest or pipeline sets it, so it doesn't get re-applied.
+---
+seconds: 19
+cost: 0.07671720000000001
+tool_calls: 7
+prompt_tokens: 54770
+completion_tokens: 2517

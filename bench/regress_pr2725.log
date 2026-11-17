@@ -1,0 +1,523 @@
+deployment.apps/order-service patched
+=== ground truth: bad-image ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS         RESTARTS   AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-57c566f6d9-rcgws   0/1     ErrImagePull   0          62s   10.42.0.47   sre-copilot-k3s-1   <none>           <none>
+pod/order-service-749677bb7f-w4kvm   1/1     Running        0          70s   10.42.0.46   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    58d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   10.42.0.46:8000       58d
+**Root cause:** A bad image tag in the latest rollout. The deployment `order-service` in `default` was updated to `autognosys/order-service:v999`, and the registry rejects that image pull.
+
+**Evidence**
+- Pod `order-service-57c566f6d9-rcgws` (new ReplicaSet, created 13:54:58Z) is `Pending` with `ErrImagePull`.
+- Its container state message: `failed to resolve reference "docker.io/autognosys/order-service:v999": pull access denied, repository does not exist or may require authorization: insufficient_scope`.
+- ReplicaSet `order-service-57c566f6d9` has 1 desired and 0 ready replicas, using `:v999`.
+- The previous ReplicaSet `order-service-749677bb7f` (image `:v1`) is still running. Pod `order-service-749677bb7f-w4kvm` is Ready and has no error, fatal, panic or exception lines in the last hour (28 log lines checked).
+- Service `order-service` (ClusterIP, port 80, selector `app=order-service`) matches both pods, so traffic still reaches the v1 pod. The rollout is stuck, not the whole service down.
+
+**Fix**
+1. Roll back to the working image:
+   `kubectl set image deployment/order-service order-service=autognosys/order-service:v1 -n default`
+   Or, if you'd rather keep the rollout going, run `kubectl rollout undo deployment/order-service -n default`.
+2. If you want v999, confirm the tag exists on Docker Hub first. The error can mean the tag doesn't exist, or that the repository is private and the pull needs credentials. In the second case, add an `imagePullSecret` to the deployment. I could not check the registry from here.
+3. Confirm with `kubectl rollout status deployment/order-service -n default`. The `:v999` pod should be replaced, and the old one should go away once the new one is ready.
+---
+seconds: 14
+cost: 0.00368274
+tool_calls: 7
+prompt_tokens: 50753
+completion_tokens: 2808
+**Cause:** a bad rollout. The `order-service` Deployment was updated (revision 2) to image `autognosys/order-service:v999`, and that image can't be pulled.
+
+**Evidence**
+- The new pod `order-service-57c566f6d9-rcgws` is Pending in `ImagePullBackOff`. The kubelet reports: `Failed to pull image "autognosys/order-service:v999": ... pull access denied, repository does not exist or may require authorization: insufficient_scope`.
+- The Deployment spec now has image `:v999`. The last-applied annotation shows `:v1`, so the change was made after the original apply.
+- The Deployment has no `imagePullSecrets`.
+- The old pod `order-service-749677bb7f-w4kvm` (`:v1`) is Running and Ready with 0 restarts. Its logs (last hour, 33 lines, no filter) show a normal startup and `/healthz` returning 200.
+- The Service `order-service` has the old pod as its only ready endpoint (`10.42.0.46:8000`). The new pod is listed under `notReadyAddresses`.
+
+**Impact**
+- **Affected:** the new pod `order-service-57c566f6d9-rcgws` (`ImagePullBackOff`, `ErrImagePull`). The rollout is stuck and the Deployment shows `Progressing` on ReplicaSet `order-service-57c566f6d9`.
+- **Checked, healthy:** the old pod is still serving, and the Service has one ready endpoint. I did not test the Service with a request.
+- **Not checked:** anything that calls `order-service`.
+
+I could not confirm that tag `v999` is missing from the registry. The error says the repository either doesn't exist or needs authorization, and `v999` looks like a mistaken tag.
+
+**Fix**
+1. Roll back to the working version:
+   ```
+   kubectl rollout undo deployment/order-service -n default
+   ```
+   Or set the image explicitly:
+   ```
+   kubectl set image deployment/order-service order-service=autognosys/order-service:v1 -n default
+   ```
+2. If `v999` is meant to exist, check that the tag is pushed to Docker Hub for `autognosys/order-service`. If the repository is private, create a registry secret and add it as `imagePullSecrets` on the Deployment.
+3. Update the source manifest or CI pipeline so the bad tag isn't re-applied.
+---
+seconds: 19
+cost: 0.0799637
+tool_calls: 8
+prompt_tokens: 57111
+completion_tokens: 2620
+deployment.apps/order-service patched
+=== ground truth: missing-configmap ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS                       RESTARTS   AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-749677bb7f-7xcpn   1/1     Running                      0          70s   10.42.0.49   sre-copilot-k3s-1   <none>           <none>
+pod/order-service-75cc766584-cz8cm   0/1     CreateContainerConfigError   0          62s   10.42.0.50   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    58d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   10.42.0.49:8000       58d
+**Root cause:** the new `order-service` rollout references a ConfigMap that doesn't exist, so its pod can't start.
+
+- Deployment `order-service` (default) has a new ReplicaSet, `order-service-75cc766584`, with pod `order-service-75cc766584-cz8cm`.
+- That pod is `Pending`, with container `order-service` in `waiting` state, reason `CreateContainerConfigError`: `configmap "order-config" not found`.
+- Event on that pod: `Warning Failed ... Error: configmap "order-config" not found` (count 6).
+- The deployment's env sets `ORDER_MODE` from `configMapKeyRef: {name: order-config, key: mode}`.
+- The only ConfigMap in `default` is `kube-root-ca.crt`. `order-config` is missing.
+
+**Why it still looks partly up:** the old pod `order-service-749677bb7f-7xcpn` is `Running` and `Ready`, so the Service still has one healthy endpoint. The rollout is stuck and the new version isn't serving. I couldn't tell from the data when or why `order-config` was deleted. Its old pod was started before the change and is still running.
+
+**Fix:**
+1. Create the missing ConfigMap with the key the deployment expects. The value must be one your app accepts. I couldn't determine it from the cluster:
+   ```
+   kubectl -n default create configmap order-config --from-literal=mode=<value>
+   ```
+   If the ConfigMap exists in another namespace or in your GitOps repo, recreate it from that source instead.
+2. The pending pod should start on its own once the ConfigMap exists. If not, delete it: `kubectl -n default delete pod order-service-75cc766584-cz8cm`.
+3. Confirm the rollout: `kubectl -n default rollout status deployment/order-service`.
+4. If you can't restore the ConfigMap, roll back: `kubectl -n default rollout undo deployment/order-service`.
+
+**Not verified:** the old pod's logs showed no errors or config failures in the last hour (the filtered search matched nothing). I didn't check the app's runtime behaviour with the new version.
+---
+seconds: 18
+cost: 0.00425947
+tool_calls: 8
+prompt_tokens: 54569
+completion_tokens: 3237
+**Cause:** The latest rollout of `order-service` is stuck because it references a ConfigMap that doesn't exist.
+
+- A new ReplicaSet, `order-service-75cc766584`, was created at 13:57:07 and added an env var `ORDER_MODE`. That var reads key `mode` from ConfigMap `order-config` (`configMapKeyRef`).
+- The `default` namespace has only `kube-root-ca.crt`. There is no `order-config`.
+- Pod `order-service-75cc766584-cz8cm` is stuck in `Pending` with `CreateContainerConfigError`. The Warning event `Failed` says: `Error: configmap "order-config" not found`.
+
+**Current impact:**
+- **Affected:** `order-service-75cc766584-cz8cm` (`CreateContainerConfigError`, `Failed`). The new version can't start.
+- **Checked, healthy:** `order-service-749677bb7f-7xcpn`, the old ReplicaSet's pod, is `Running` and ready with 0 restarts. Its logs show `Application startup complete` and `/healthz` returning 200. The Deployment reports 1/1 ready, and the `order-service` Service (ClusterIP, port 80, selector `app=order-service`) still has this pod behind it.
+- **Not checked:** whether the Service has endpoints, or whether clients can reach it.
+
+The old pod is serving traffic, but the rollout can't finish. The old pod is the only one that matches the Service, and it will be removed once the new pod becomes ready. If the rollout is stuck on a Deployment `progressDeadlineSeconds` timeout, it will eventually show as failed.
+
+**Fix (pick one):**
+1. Create the missing ConfigMap with the expected key, then the pod will start on its next retry:
+   ```
+   kubectl -n default create configmap order-config --from-literal=mode=<value>
+   ```
+   If the pod doesn't recover, run `kubectl -n default delete pod order-service-75cc766584-cz8cm`. I couldn't determine the correct value for `mode`, so confirm it with the team that owns the change.
+2. Roll back the change if `ORDER_MODE` wasn't meant to ship yet:
+   ```
+   kubectl -n default rollout undo deployment/order-service
+   ```
+3. To prevent a repeat, deploy the ConfigMap in the same manifest or Helm chart as the Deployment. You could also mark the key `optional: true` if the app has a default for `ORDER_MODE`.
+---
+seconds: 19
+cost: 0.07147260000000001
+tool_calls: 7
+prompt_tokens: 53036
+completion_tokens: 2457
+deployment.apps/order-service patched
+=== ground truth: crash-on-startup ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS             RESTARTS      AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-554d7ff94d-jmdjk   0/1     CrashLoopBackOff   3 (20s ago)   62s   10.42.0.53   sre-copilot-k3s-1   <none>           <none>
+pod/order-service-749677bb7f-xf2cs   1/1     Running            0             70s   10.42.0.52   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    58d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   10.42.0.52:8000       58d
+**Root cause:** the latest rollout of `order-service` (Deployment revision 2) sets `CRASH_ON_STARTUP=true`, so its container exits on start and goes into CrashLoopBackOff. The service is only partly degraded because the older pod from revision 1 is still ready and taking traffic.
+
+**Evidence**
+- Pods (label `app=order-service`):
+  - `order-service-554d7ff94d-jmdjk` (revision 2): `CrashLoopBackOff`, 3 restarts, not ready. Last termination: exit code 1, reason `Error`.
+  - `order-service-749677bb7f-xf2cs` (revision 1): Running, ready, 0 restarts.
+- Logs from `order-service-554d7ff94d-jmdjk` (last hour, all 6 lines shown, no filter):
+  ```
+  2026-11-16 14:00:00,526 ERROR order-service CRASH_ON_STARTUP is set — exiting immediately to simulate a bad deploy
+  ```
+- Deployment `order-service` (image `autognosys/order-service:v1` in both revisions):
+  - Revision 2 (ReplicaSet `order-service-554d7ff94d`) env: `CRASH_ON_STARTUP=true`.
+  - Revision 1 (ReplicaSet `order-service-749677bb7f`) env: `CRASH_ON_STARTUP=false`.
+  - Everything else is the same between the two, including `OTEL_EXPORTER_OTLP_ENDPOINT` and `LEAK_RATE_MB_PER_SEC=0`.
+  - Rollout is stuck: Progressing is True with reason `ReplicaSetUpdated`, and the deployment reports 1 ready of 1 desired.
+- Service `order-service` (ClusterIP, port 80, selector `app=order-service`) matches both pods. Only the ready revision-1 pod receives traffic.
+- I did not find any Kubernetes events for these pods, so the crash evidence comes from pod status and logs.
+
+**Fix**
+1. Roll back to the working revision (fastest):
+   `kubectl rollout undo deployment/order-service -n default`
+2. Or keep the new revision and turn the flag off:
+   `kubectl set env deployment/order-service -n default CRASH_ON_STARTUP=false`
+   (Or remove the variable.)
+3. Confirm: `kubectl rollout status deployment/order-service -n default`, and check that both pods are Ready.
+
+Whichever option you pick, check why `CRASH_ON_STARTUP=true` was added to the revision-2 template. The log line says it was set "to simulate a bad deploy", so it may be a test setting that leaked into a real deployment.
+---
+seconds: 17
+cost: 0.004398335
+tool_calls: 8
+prompt_tokens: 53993
+completion_tokens: 3578
+**Root cause:** The latest Deployment revision sets `CRASH_ON_STARTUP=true`. The new pod exits on startup, and the rollout is stuck.
+
+**Evidence**
+- `order-service-554d7ff94d-jmdjk` is in `CrashLoopBackOff`. It has 3 restarts, and its last exit was code 1 ("Error").
+- Its logs, from the last hour, show the cause: `ERROR order-service CRASH_ON_STARTUP is set — exiting immediately to simulate a bad deploy`.
+- The Deployment template (generation 2) has `CRASH_ON_STARTUP=true`. The ReplicaSet `order-service-554d7ff94d` created from it never becomes ready.
+- The old pod `order-service-749677bb7f-xf2cs` has `CRASH_ON_STARTUP=false`. It is Running and ready, and it is still serving traffic through the `order-service` ClusterIP Service (selector `app=order-service`).
+- The Deployment reports 2 replicas, 1 updated, 1 available and 1 unavailable. The rolling update (25% surge and unavailable) is blocked, so the old pod is kept.
+
+**Current state:** Service is degraded, not fully down. It is running on the old revision, with no capacity redundancy. The new revision cannot roll out. Both pods use image `autognosys/order-service:v1`, so the difference is the env var only.
+
+**Fix**
+Roll back to the previous revision:
+```
+kubectl rollout undo deployment/order-service -n default
+```
+Or fix it in place:
+```
+kubectl set env deployment/order-service -n default CRASH_ON_STARTUP=false
+```
+Then check the rollout and make sure the manifest, Helm values or GitOps source is also corrected. Otherwise the next apply will reintroduce `CRASH_ON_STARTUP=true`.
+```
+kubectl rollout status deployment/order-service -n default
+```
+
+**Not checked:** I did not look at other consumers of this service, or at the otel-collector endpoint in `observability`. The logs show no errors for it.
+---
+seconds: 19
+cost: 0.07369250000000001
+tool_calls: 8
+prompt_tokens: 53675
+completion_tokens: 2651
+deployment.apps/order-service patched
+=== ground truth: bad-readiness ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS    RESTARTS   AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-749677bb7f-zc5p7   1/1     Running   0          69s   10.42.0.55   sre-copilot-k3s-1   <none>           <none>
+pod/order-service-96888cdf8-tvq24    0/1     Running   0          61s   10.42.0.56   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    58d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   10.42.0.55:8000       58d
+**Root cause:** The readiness probe on the new revision points at a path the app doesn't serve.
+
+- Deployment `order-service` (revision 2) changed the readiness probe to `GET /ready` on port 8000. Its liveness probe still uses `/healthz`.
+- Pod `order-service-96888cdf8-tvq24` (new ReplicaSet, created 14:01:30Z) is `Ready=False` with `ContainersNotReady`. Its events show `Unhealthy` (`Readiness probe failed: HTTP probe failed with statuscode: 404`), 13 times, last at 14:02:36Z.
+- Its logs show repeated `GET /ready ... 404 Not Found`, while `GET /healthz ... 200 OK` succeeds. The app only serves `/healthz`.
+- Pod `order-service-749677bb7f-zc5p7` (old ReplicaSet, revision 1) is `Ready=True`. Its readiness probe is `/healthz` and its logs show only 200s.
+- The image is the same on both (`autognosys/order-service:v1`), so the probe change is the only difference I found.
+
+**Impact:**
+- Affected: `order-service-96888cdf8-tvq24` (new pod, `Unhealthy` readiness failures, never becomes Ready). The rollout is stuck, so the new ReplicaSet never completes.
+- Checked, healthy: `order-service-749677bb7f-zc5p7` (old pod, Ready, no errors in logs). The Deployment still shows `Available=True` with 1 ready replica, so the Service (`order-service`, ClusterIP, port 80, selector `app=order-service`) should still route to the old pod. I did not test the endpoints directly.
+
+**Fix (pick one):**
+1. Roll back to the working revision:
+   `kubectl rollout undo deployment/order-service -n default`
+2. Or point the readiness probe back at `/healthz`:
+   `kubectl patch deployment order-service -n default --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/httpGet/path","value":"/healthz"}]'`
+3. Or, if `/ready` is intended, add that endpoint to the application and publish a new image. Until then, keep the probe on `/healthz`.
+
+After either fix, check with `kubectl rollout status deployment/order-service -n default`.
+---
+seconds: 20
+cost: 0.005028415
+tool_calls: 9
+prompt_tokens: 59273
+completion_tokens: 3796
+**Root cause:** The latest rollout of `order-service` (revision 2) is stuck. Its readiness probe points at `/ready`, and the app doesn't serve that path.
+
+**Evidence**
+- The Deployment `order-service` has two ReplicaSets:
+  - `order-service-749677bb7f` (revision 1) has pod `...-zc5p7`. It is Ready and uses the readiness probe `GET /healthz`.
+  - `order-service-96888cdf8` (revision 2) has pod `...-tvq24`. It is Running but not Ready (0 restarts), and its readiness probe is `GET /ready`.
+- The image (`autognosys/order-service:v1`) and env vars are the same in both pods. The only difference I found is the readiness probe path, `/healthz` versus `/ready`.
+- The kubelet emits a `Warning Unhealthy` event on `...-tvq24`: `Readiness probe failed: HTTP probe failed with statuscode: 404`.
+- I read the logs of `...-tvq24`: all 34 lines, no filter, current and previous container. The app returns `GET /ready HTTP/1.1" 404 Not Found` on every probe, while `GET /healthz` returns 200. The app itself started cleanly.
+- The Deployment shows `replicas: 2, updatedReplicas: 1, readyReplicas: 1, unavailableReplicas: 1`. The condition is `Progressing: ReplicaSetUpdated`.
+
+**Impact**
+- **Affected:** the new pod `order-service-96888cdf8-tvq24` never becomes Ready (`Unhealthy`, 404). The rollout can't complete.
+- **Checked, healthy:** the old pod `order-service-749677bb7f-zc5p7` is Ready with 0 restarts. The Deployment reports `Available: True` (`MinimumReplicasAvailable`).
+- **Not checked:** I didn't test the Service endpoints directly. The `order-service` Service selects `app=order-service`. By default, only Ready pods are in its endpoints, so traffic should still go to the old pod.
+- The service is therefore degraded, not fully down. If you're seeing outright failures, tell me what you see. Otherwise the cause could be elsewhere, for example in the app's behavior.
+
+**Fix**
+
+Pick one:
+1. Point the probe back at a path the app serves:
+   ```
+   kubectl -n default patch deployment order-service --type=json \
+     -p='[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/httpGet/path","value":"/healthz"}]'
+   ```
+2. Or roll back to revision 1:
+   ```
+   kubectl -n default rollout undo deployment/order-service
+   ```
+3. If you actually want `/ready`, the app has to implement that endpoint. The `v1` image doesn't have it. You would need a new image tag that does.
+
+Then verify with `kubectl -n default rollout status deployment/order-service`.
+---
+seconds: 24
+cost: 0.0865152
+tool_calls: 8
+prompt_tokens: 60430
+completion_tokens: 2929
+deployment.apps/order-service patched
+=== ground truth: bad-liveness ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS    RESTARTS     AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-7c885bbf75-8b6w2   0/1     Running   2 (1s ago)   62s   10.42.0.59   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    58d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service                         58d
+**Root cause:** the liveness probe checks the wrong port. The container listens on 8000, but the liveness probe calls `/healthz` on port 9999, which nothing listens on. Kubelet treats each failed check as a dead container and restarts it, so the app is killed roughly every 30 seconds.
+
+**Evidence**
+- Deployment `order-service` (default): `containerPort 8000`. Liveness probe: `httpGet /healthz port 9999`. Readiness probe: `/healthz port 8000`.
+- Events on pod `order-service-7c885bbf75-8b6w2`:
+  - `Unhealthy` (Warning), 7 times: `Liveness probe failed: Get "http://10.42.0.59:9999/healthz": connect: connection refused`
+  - `Killing` (Normal), 2 times: `Container order-service failed liveness probe, will be restarted`
+- Container `order-service`: restartCount 2, last state `Completed`, exit code 0. The exit is a normal shutdown after the kill, not a crash or OOM.
+- App logs (last 24h, up to 200 lines, unfiltered): Uvicorn starts on `0.0.0.0:8000`, serves `GET /healthz` 200 OK from the kubelet, then `Shutting down` on each restart. No application errors.
+- Current state: pod Running, Ready, Deployment 1/1 available. The restarts are ongoing, though, and the pod will keep cycling.
+
+**Fix:** point the liveness probe at the port the app actually serves (8000). Either patch it:
+
+```
+kubectl -n default patch deployment order-service --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/httpGet/port","value":8000}]'
+```
+
+or edit the deployment and change `livenessProbe.httpGet.port` from `9999` to `8000`. Then confirm with `kubectl -n default rollout status deployment/order-service` and check that the restart count stops increasing.
+
+**Not verified:** I did not test whether client requests to `order-service` are failing. The restarts would cause brief outages and dropped in-flight requests, but I have no data on request errors.
+---
+seconds: 17
+cost: 0.003822805
+tool_calls: 7
+prompt_tokens: 53032
+completion_tokens: 2862
+**Root cause:** the liveness probe checks the wrong port, so Kubernetes keeps killing a healthy container.
+
+**Evidence**
+- The liveness probe in the `order-service` deployment is `httpGet /healthz` on port **9999**. The app only listens on **8000** (the container port, and the Uvicorn log line `Uvicorn running on http://0.0.0.0:8000`).
+- Events on pod `order-service-7c885bbf75-8b6w2` show `Unhealthy` (8 times): `Liveness probe failed: Get "http://10.42.0.59:9999/healthz": dial tcp ...:9999: connect: connection refused`. They also show `Killing`: `Container order-service failed liveness probe, will be restarted`.
+- The pod has 2 restarts. The last termination was `Completed` with exit code 0, which is a graceful SIGTERM shutdown from the kubelet, not an app crash or OOM.
+- Logs (last hour, current and previous container, all 26 lines) show a clean startup. Readiness `/healthz` on port 8000 returns `200 OK`, and the log shows `Shutting down` followed by a restart. The app has no errors of its own.
+- The pod reports Ready between restarts, so the service flaps. It will keep restarting about every 30 seconds, and requests will fail during each restart.
+- The deployment was rolled at 14:03. `order-service-749677bb7f` was scaled down and `order-service-7c885bbf75` replaced it. I did not compare the two revisions' probe configs, so I can't say whether the rollout introduced the bad port.
+
+**Fix:** point the liveness probe at port 8000.
+
+```
+kubectl -n default patch deployment order-service --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/httpGet/port","value":8000}]'
+```
+
+Also update the port in your source manifest or Helm values so a later deploy doesn't bring the bug back. If the app is meant to serve health checks on 9999, change the app to listen there instead.
+
+**Checked and healthy:**
+- Deployment: 1/1 ready.
+- Service `order-service`: ClusterIP, port 80, selector `app=order-service`. I did not check that its target port is 8000.
+- Memory settings: `LEAK_RATE_MB_PER_SEC=0` and `CRASH_ON_STARTUP=false`.
+
+**Not checked:** the OTel collector endpoint. No errors about it showed up in the logs.
+---
+seconds: 17
+cost: 0.06749980000000001
+tool_calls: 6
+prompt_tokens: 37766
+completion_tokens: 2268
+deployment.apps/order-service patched
+=== ground truth: unschedulable ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS    RESTARTS   AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-6cd6687bf6-hjqz2   0/1     Pending   0          62s   <none>       <none>              <none>           <none>
+pod/order-service-749677bb7f-9szdw   1/1     Running   0          69s   10.42.0.61   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    58d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   10.42.0.61:8000       58d
+**Root cause:** the order-service rollout is stuck because the new pod asks for 100Gi of memory, and the only node cannot provide it.
+
+- The Deployment `order-service` (image `autognosys/order-service:v1`) has a new ReplicaSet, `order-service-6cd6687bf6`. Its pod `order-service-6cd6687bf6-hjqz2` is **Pending**.
+- Its container sets `resources.requests.memory: 100Gi` and `limits.memory: 100Gi`.
+- Scheduler event (`FailedScheduling`, Warning): `0/1 nodes are available: 1 Insufficient memory.`
+- The only node, `sre-copilot-k3s-1`, has about 15.6 GiB allocatable memory (16377016Ki), so 100Gi can never fit.
+- The old pod `order-service-749677bb7f-9szdw` is still Running and Ready on the same node. It requests 64Mi and limits 256Mi. Its logs show `/healthz` returning 200 OK.
+
+**Impact (what I verified):**
+- **Affected:** `order-service-6cd6687bf6-hjqz2` (`FailedScheduling`, Pending). The Deployment is stuck mid-rollout, with the new ReplicaSet never becoming available.
+- **Checked, healthy:** `order-service-749677bb7f-9szdw` (Ready, healthz 200, no restarts). The Service `order-service` (ClusterIP, port 80, selector `app=order-service`) exists, and the Deployment reports `Available`.
+- **Not checked:** Service endpoints, ingress and end-to-end requests. I have not confirmed whether users see errors. The 100Gi pod is the only problem I found.
+
+**Fix:** the 100Gi value looks like a typo, probably for 100Mi or a similar small value. Set realistic values. Matching the running revision is a safe start:
+
+```bash
+kubectl -n default set resources deployment/order-service \
+  -c order-service --requests=memory=64Mi --limits=memory=256Mi
+```
+
+Then confirm the rollout finishes:
+
+```bash
+kubectl -n default rollout status deployment/order-service
+kubectl -n default get pods -l app=order-service
+```
+
+Deleting the Pending pod alone won't help, because the ReplicaSet will recreate it with the same 100Gi request. Fix the Deployment spec instead.
+---
+seconds: 18
+cost: 0.004563635
+tool_calls: 8
+prompt_tokens: 56551
+completion_tokens: 3598
+**Cause:** A new rollout (revision 2) asks for 100Gi of memory, so its pod can't be scheduled. The service itself is still being served by the old pod.
+
+**What I found**
+- Deployment `order-service` has two ReplicaSets:
+  - `order-service-749677bb7f` (revision 1) has pod `order-service-749677bb7f-9szdw`. It is Running and Ready, with 0 restarts. It requests 64Mi and has a 256Mi limit.
+  - `order-service-6cd6687bf6` (revision 2) has pod `order-service-6cd6687bf6-hjqz2`. It is stuck Pending and was created at 14:06:03Z.
+- The Pending pod's `FailedScheduling` event says: `0/1 nodes are available: 1 Insufficient memory. Preemption is not helpful`.
+- That pod's spec has `requests.memory: 100Gi` and `limits.memory: 100Gi`. The only node, `sre-copilot-k3s-1`, has about 15.6Gi allocatable (16377016Ki), so 100Gi can never fit.
+- Both revisions use the same image, `autognosys/order-service:v1`. The only difference I found is memory (100Gi vs 64Mi/256Mi). I did not compare the full specs of the two ReplicaSets.
+- The old pod's logs (last 1h, 34 lines) show uvicorn started normally and `/healthz` returning 200 OK. I saw no errors.
+- The service `order-service` has one endpoint, 10.42.0.61:8000, which is the old pod.
+
+**Impact**
+- Affected: `order-service-6cd6687bf6-hjqz2` (`FailedScheduling`, `Unschedulable`). The rollout can't complete.
+- Checked, healthy: the old pod `order-service-749677bb7f-9szdw` and the service endpoint. The service is probably still reachable through the old pod. If you are seeing failures, tell me what they are. I didn't test the HTTP path.
+- Risk: if the old pod is restarted or the node is lost, nothing healthy will replace it.
+
+**Fix**
+Pick one of the two options below. The container is named `order-service` in the pod spec.
+
+1. Roll back to the working revision:
+   ```
+   kubectl rollout undo deployment/order-service -n default
+   ```
+2. Or correct the memory values in the deployment, keeping the changes you intended to make:
+   ```
+   kubectl set resources deployment/order-service -n default \
+     --requests=memory=64Mi --limits=memory=256Mi
+   ```
+   Check the values in your manifest or Helm values or GitOps source. The `100Gi` is likely a typo for `100Mi`. Fix it there too, or the next sync will reintroduce it.
+
+Then confirm with `kubectl rollout status deployment/order-service`.
+---
+seconds: 22
+cost: 0.0845762
+tool_calls: 9
+prompt_tokens: 57340
+completion_tokens: 3096
+service/order-service patched
+=== ground truth: svc-selector ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS    RESTARTS   AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-749677bb7f-bkxtd   1/1     Running   0          69s   10.42.0.63   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    58d   app=order-svc
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   <none>                58d
+The `order-service` Service has no backends because its selector doesn't match the pod's labels. The pod itself is healthy.
+
+**Root cause (confirmed)**
+- Service `order-service` (default ns, ClusterIP 10.43.62.168, port 80 → targetPort 8000) has selector `app: order-svc`.
+- Pod `order-service-749677bb7f-bkxtd` is labeled `app: order-service`. The label values differ (`order-svc` vs `order-service`), so the Service matches no pods.
+- Its Endpoints object is empty (`subsets: null`), so traffic to the Service is dropped or fails to connect.
+
+**Evidence the app itself is fine**
+- Deployment `order-service`: 1/1 ready, image `autognosys/order-service:v1`.
+- Pod: Running, Ready, 0 restarts, no waiting or termination reason.
+- Logs for the last hour (all 28 lines, no filter): Uvicorn started on port 8000 and only answered `GET /healthz` 200 OK from the kubelet. No application requests arrived, which fits a Service with no endpoints. No errors.
+
+**Fix (pick one)**
+1. Change the Service selector to match the pods (usually the right fix):
+   ```
+   kubectl -n default patch svc order-service -p '{"spec":{"selector":{"app":"order-service"}}}'
+   ```
+2. Or change the pod template label to `app: order-svc` in the Deployment, if other things depend on that label. This rolls out new pods.
+
+After either change, confirm with `kubectl -n default get endpoints order-service`. It should list `10.42.0.63:8000`.
+---
+seconds: 13
+cost: 0.0032983149999999996
+tool_calls: 7
+prompt_tokens: 35886
+completion_tokens: 2407
+**Root cause:** the `order-service` Service selector doesn't match the pod's labels. The Service has no endpoints, so nothing can reach the app.
+
+- The Service `default/order-service` selects `app: order-svc`.
+- The pod `order-service-749677bb7f-bkxtd` is labeled `app: order-service`.
+- The `order-service` Endpoints object has no addresses, so traffic to `order-service:80` has nowhere to go.
+
+**The pod itself is healthy:**
+- It is `Running` and `Ready`, with 0 restarts.
+- The deployment has 1/1 replicas ready.
+- Logs (last 1 hour, 31 lines, no filter) show Uvicorn listening on port 8000 and `/healthz` returning 200. There are no errors.
+- The Service's `targetPort` of 8000 matches the container port, so the port mapping is not the problem.
+
+**Fix:** change the Service selector to match the pod label. Run this:
+
+```
+kubectl -n default patch svc order-service -p '{"spec":{"selector":{"app":"order-service"}}}'
+```
+
+If you manage the Service through YAML, Helm or GitOps, make the same change in the source. Otherwise the old selector will be reapplied.
+
+Then check that the endpoints now list the pod IP on port 8000:
+
+```
+kubectl -n default get endpoints order-service
+```
+
+I didn't check whether anything else, such as an Ingress or other clients, depends on this Service. They will stay broken until the endpoints populate.
+---
+seconds: 14
+cost: 0.0618246
+tool_calls: 7
+prompt_tokens: 36594
+completion_tokens: 2011

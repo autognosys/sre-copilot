@@ -1,0 +1,66 @@
+deployment.apps/order-service patched
+=== ground truth: bad-readiness ===
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME                                 READY   STATUS    RESTARTS   AGE   IP           NODE                NOMINATED NODE   READINESS GATES
+pod/order-service-749677bb7f-cgzw2   1/1     Running   0          49s   10.42.0.35   sre-copilot-k3s-1   <none>           <none>
+pod/order-service-96888cdf8-tfgxl    0/1     Running   0          41s   10.42.0.36   sre-copilot-k3s-1   <none>           <none>
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/kubernetes      ClusterIP   10.43.0.1      <none>        443/TCP   58d   <none>
+service/order-service   ClusterIP   10.43.62.168   <none>        80/TCP    57d   app=order-service
+
+NAME                      ENDPOINTS             AGE
+endpoints/kubernetes      192.168.100.10:6443   58d
+endpoints/order-service   10.42.0.35:8000       57d
+**Root cause:** the latest rollout of `order-service` (revision 2, ReplicaSet `order-service-96888cdf8`) changed the readiness probe to `/ready`, an endpoint the app does not serve. The new pod never becomes Ready, so the rollout is stuck.
+
+**Evidence**
+- Deployment `order-service` (default): revision 2 readiness probe is `httpGet /ready:8000`. Revision 1 (`order-service-749677bb7f`) used `/healthz:8000`. The image is the same in both (`autognosys/order-service:v1`), so only the probe changed.
+- Pod `order-service-96888cdf8-tfgxl`: `Running` but `ready: false`, 0 restarts.
+- Events: `Unhealthy` (Warning) on `order-service-96888cdf8-tfgxl`, `Readiness probe failed: HTTP probe failed with statuscode: 404`, count 9, last at 06:37:12Z.
+- Logs of `order-service-96888cdf8-tfgxl` (last 1h, all 21 lines shown, no filter): repeated `GET /ready HTTP/1.1" 404 Not Found` alongside `GET /healthz ... 200 OK`. The app is healthy, it just has no `/ready` route.
+- Pod `order-service-749677bb7f-cgzw2` (revision 1): Ready, 0 restarts, logs show only `/healthz` 200 responses.
+- Deployment status: `Available=True` (MinimumReplicasAvailable) because the old revision-1 pod is still serving. `Progressing` is stuck on `ReplicaSet "order-service-96888cdf8" is progressing`.
+
+**Impact**
+- **Affected:** `order-service-96888cdf8-tfgxl` (new revision 2 pod): readiness fails with 404 (`Unhealthy`).
+- **Affected:** `order-service` rollout: stalled at revision 2, with the new ReplicaSet never reaching ready.
+- **Checked, healthy:** `order-service-749677bb7f-cgzw2` (revision 1), still Ready and serving. The Deployment is Available.
+- Not checked: Service endpoints and any downstream callers of `order-service`. Consumers may still be served by the old pod, but I did not verify this.
+
+**Fix (pick one)**
+1. Revert the probe to the working path:
+   `kubectl -n default patch deployment order-service --type='json' -p='[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/httpGet/path","value":"/healthz"}]'`
+2. Or add a `/ready` route to the application code, if a separate readiness check is intended, and redeploy.
+
+After either fix, confirm with `kubectl -n default rollout status deployment/order-service`.
+---
+seconds: 19
+cost: 0.00462776
+tool_calls: 7
+prompt_tokens: 43383
+completion_tokens: 3728
+**Root cause:** the latest rollout of `order-service` (revision 2) changed the readiness probe path from `/healthz` to `/ready`. The app doesn't serve `/ready`, so the new pod never becomes Ready and the rollout is stuck.
+
+**Evidence**
+- Deployment `order-service` (default) has two ReplicaSets:
+  - Rev 1, `order-service-749677bb7f`: 1/1 ready. Its pod `order-service-749677bb7f-cgzw2` is Running and Ready, with readiness probe `GET /healthz`.
+  - Rev 2, `order-service-96888cdf8`: 0 ready. Its pod `order-service-96888cdf8-tfgxl` is Running but not Ready (`ContainersNotReady`), with readiness probe `GET /ready` on port 8000.
+- Both revisions use the same image (`autognosys/order-service:v1`) and the same env vars (`LEAK_RATE_MB_PER_SEC=0`, `CRASH_ON_STARTUP=false`). The only difference I found is the probe path.
+- Kubelet event on `order-service-96888cdf8-tfgxl` (`Unhealthy`): `Readiness probe failed: HTTP probe failed with statuscode: 404`.
+- I read the last 15 minutes of logs from `order-service-96888cdf8-tfgxl` (27 lines, unfiltered). The app starts normally. Every `GET /ready` returns `404 Not Found`, while `GET /healthz` returns `200 OK`.
+
+**Impact**
+- **Affected:** `order-service-96888cdf8-tfgxl` is not Ready (`Unhealthy`, 404 on `/ready`). The Deployment's rollout to revision 2 is stuck.
+- **Checked, healthy:** `order-service-749677bb7f-cgzw2` is Ready with 0 restarts. The old pod `order-service-749677bb7f-thzfr` was stopped (`Killing`) at 06:36:17 and recreated as `cgzw2`. I did not establish why. It happened before the revision 2 rollout at 06:36:27.
+- **Not checked:** service endpoints and traffic. A not-ready pod is normally excluded from Service endpoints, so traffic should go only to the healthy pod, but I haven't confirmed that.
+
+**Fix**
+- Either roll back with `kubectl rollout undo deployment/order-service -n default`, or change the readiness probe path back to `/healthz`.
+- If `/ready` is meant to exist, the app image needs to implement it. The image is still `v1`, so the change was probably made in the manifest only.
+---
+seconds: 18
+cost: 0.0775161
+tool_calls: 6
+prompt_tokens: 57899
+completion_tokens: 2460
