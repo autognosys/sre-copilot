@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: triage-agent
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: triage-agent
+rules:
+  # Watch pod status transitions — the primary signal source.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Read events for extra context once the Claude reasoning loop is wired up.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # Deliberately NOT granted: create/update/delete/patch on any resource.
+  # v1 is read-only triage — it diagnoses, it does not act on the cluster.
+  # Extend this role explicitly (and think hard about it) before ever
+  # giving the agent write access.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: triage-agent
+subjects:
+  - kind: ServiceAccount
+    name: triage-agent
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: triage-agent
+  apiGroup: rbac.authorization.k8s.io

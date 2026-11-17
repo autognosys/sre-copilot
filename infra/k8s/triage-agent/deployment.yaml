@@ -1,0 +1,44 @@
+# The Claude API key is deliberately NOT in this file — see README.md in
+# this directory for creating the Secret it references (ANTHROPIC_API_KEY),
+# same handling as every other credential in this repo: never committed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triage-agent
+  namespace: default
+  labels:
+    app: triage-agent
+spec:
+  replicas: 1 # exactly one — a second replica would double-count cooldowns/budget, since state is in-memory per-process
+  selector:
+    matchLabels:
+      app: triage-agent
+  template:
+    metadata:
+      labels:
+        app: triage-agent
+    spec:
+      serviceAccountName: triage-agent
+      containers:
+        - name: triage-agent
+          image: autognosys/triage-agent:v1
+          imagePullPolicy: Never # locally built, imported via `k3s ctr images import` — no registry, same pattern as order-service
+          env:
+            - name: WATCH_NAMESPACE
+              value: "default"
+            - name: TRIAGE_COOLDOWN
+              value: "15m"
+            - name: MONTHLY_BUDGET_USD
+              value: "20.00" # hard circuit breaker — "tens of dollars," not hundreds
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: triage-agent-secrets
+                  key: anthropic-api-key
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
