@@ -1,4 +1,6 @@
 additionalEnvVars:
+  - name: TOOL_MEMORY_LIMIT_MB
+    value: "2048"
   - name: ANTHROPIC_API_KEY
     valueFrom:
       secretKeyRef:

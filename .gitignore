@@ -4,6 +4,8 @@
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+*.tfplan
+tfplan.out
 crash.log
 crash.*.log
 override.tf
@@ -21,6 +23,10 @@ override.tf.json
 **/fetched/
 *.retry
 
+# --- Go (triage-agent) ---
+/app/triage-agent/triage-agent
+*.exe
+
 # --- Python (triage agent, eval harness) ---
 __pycache__/
 *.pyc
@@ -32,5 +38,4 @@ venv/
 .vscode/
 .idea/
 .DS_Store
-*.tfplan
-tfplan.out
+bench/*.json
